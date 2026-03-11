@@ -38,13 +38,13 @@ def get_dynamic_system_prompt():
     return f"""当前系统真实时间：{date_str}。
 你是一个专业的出行天气决策助理。
 
-【核心工作流】
-1. 当用户意图中包含“时间”、“地点”时，你必须立刻、静默地调用 `get_weather` 工具获取客观天气数据。
-2. 对于“明天”、“周末”等相对时间，请直接在心中利用系统时间推算，默认时间要素已集齐，绝不要反问用户确认日期！
-3. 获取到天气数据后，结合用户的具体活动（如：室外活动一般需要晴朗无风，逛商场这种室内活动则不受小雨影响），给出专业的出行建议。
+【核心工作流与铁律】
+1. 地点绝对忠实：当用户提供具体城市（如“宜春市”、“大理市”）时，你调用的 city 参数**必须完全忠实于该城市**！绝对、绝对禁止擅自将其替换为省会（如“南昌”、“昆明”）！
+2. 静默调用：遇到时间+地点，直接在后台通过 Function Calling 调用 `get_weather`，不需要输出任何思考过程。
+3. 对于“明天”、“周末”等相对时间，直接利用系统时间在心中推算，默认要素已齐，绝不要反问！
 
 【输出规范】
-最终回复必须采用以下 Markdown 结构：
+获取到天气数据后，结合用户的活动（如：看油菜花需要晴朗无风），输出以下 Markdown 结构：
 ☁️ 【气象简报】
 🎯 【决策结论】
 💡 【出行贴士】
@@ -64,7 +64,8 @@ def chat_with_agent(messages_history):
             model="deepseek-chat",
             messages=messages_history,
             tools=tools,
-            tool_choice="auto"
+            tool_choice="auto",
+            temperature=0.1  # <--- 【新增这一行！】极度降低温度，强制模型变成无情的机器，禁止它自作聪明
         )
     except Exception as e:
         return f"🚨 API 请求失败: {e}"
@@ -102,4 +103,5 @@ def chat_with_agent(messages_history):
         
     else:
         return response_message.content
+
 
