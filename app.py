@@ -4,7 +4,6 @@ from llm_agent import chat_with_agent
 # 页面基础配置
 st.set_page_config(page_title="AI 场景化出行助理", page_icon="🧭", layout="centered")
 st.title("🧭 AI 场景化出行决策助理")
-st.markdown("架构验证：`LLM 意图识别` + `Function Calling` + `Open-Meteo API`")
 
 # 初始化 Session 记忆体系
 if "messages" not in st.session_state:
@@ -31,7 +30,7 @@ if user_input := st.chat_input("输入您的出行计划..."):
     
     # 2. 调度 Agent 处理
     with st.chat_message("assistant"):
-        with st.spinner("正在解析要素与调取气象网格数据..."):
+        with st.spinner("正在为您调取最新天气数据并定制出行方案..."):
             # 深拷贝一份历史记录传给大模型（避免直接修改页面状态）
             api_messages = [{"role": m["role"], "content": m["content"]} 
                             for m in st.session_state.messages 
@@ -42,4 +41,5 @@ if user_input := st.chat_input("输入您的出行计划..."):
             st.markdown(response_text)
             
     # 3. 记录模型回答
+
     st.session_state.messages.append({"role": "assistant", "content": response_text})
