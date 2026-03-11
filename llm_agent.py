@@ -1,107 +1,92 @@
 from openai import OpenAI
 import json
 import datetime
+import streamlit as st
 from weather_api import fetch_weather_for_city
 
-# ==========================================
 # 1. 基础配置
-# ==========================================
-API_KEY = "sk-5b527f3b414c43eba6cbbb0ac272ffcb"  # 确保账号内有充足的 Token 余额
+API_KEY = st.secrets["DEEPSEEK_API_KEY"]
 BASE_URL = "https://api.deepseek.com"
 client = OpenAI(api_key=API_KEY, base_url=BASE_URL)
 
-# ==========================================
-# 2. Function Calling 接口定义 (骨骼)
-# ==========================================
-# 这就是最正宗的 Function Calling Schema！
+# 2. 极简版 Tools (去掉了干扰它的推算参数，回归最纯粹的城市查询)
 tools = [
     {
         "type": "function",
         "function": {
             "name": "get_weather",
-            "description": "获取城市未来气象数据。只要用户提到地点和时间（哪怕是相对时间），必须立即调用此工具获取客观数据！",
+            "description": "获取城市天气。当用户提到地点和出行计划时调用此工具。",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "city": {
                         "type": "string",
-                        "description": "标准的城市名称，如'广州'、'北京'"
-                    },
-                    "inferred_date": {
-                        "type": "string",
-                        "description": "利用系统时间自行推算出的具体日期范围，例如'3月14日-15日'。必须由模型自行推算填入，禁止向用户提问确认！"
+                        "description": "标准城市名，如'广州'、'宜春'"
                     }
                 },
-                # 强校验：逼迫模型输出 JSON 时必须带上推算好的时间，阻断其聊天的欲望
-                "required": ["city", "inferred_date"] 
+                "required": ["city"]
             }
         }
     }
 ]
 
-# ==========================================
-# 3. 动态 Prompt 与业务风控 (大脑)
-# ==========================================
+# 3. 温和但坚定的系统提示词
 def get_dynamic_system_prompt():
-    """动态注入真实时间，消除大模型的时间盲区"""
     now = datetime.datetime.now()
     date_str = now.strftime("%Y年%m月%d日，%A")
     
-    return f"""【系统物理时间与指令基准】
-当前系统真实时间是：{date_str}。请严格以此作为推算“明天、周末”等时间的锚点。
+    return f"""当前系统真实时间是：{date_str}。
+你是一个专业的场景化出行天气助理。
 
-# 核心红线规则（必须严格遵守）
-1. 自行推算日期：遇到相对时间时，你已具备足够信息，**绝对禁止向用户反问确认具体日期！**
-2. 静默调用工具：推算出日期后，你必须通过系统原生的 Function Calling 机制在后台静默触发 `get_weather`。
-3. 严禁暴露代码：**绝对禁止在最终给用户的文本回复中，输出类似 `< | DSML | >`、JSON 或任何底层调用代码！** 用户看不懂这些代码。
-# Role
-你是一位拥有资深气象学知识与丰富生活经验的“智能场景化出行决策助理”。
-获取真实天气数据后，结合用户行为意图（如户外/室内），输出包含「☁️ 气象简报」、「🎯 决策结论」、「💡 出行贴士」的专业 Markdown 报告。
+【核心准则】
+1. 当用户使用“明天”、“这周末”等相对时间，你必须自行在心中推算日期。绝对不要向用户反问确认日期！直接默认时间条件已满足。
+2. 提取到地点后，请直接且静默地调用 get_weather 工具。
+3. 绝对禁止在回复中输出任何 DSML、XML 或 JSON 代码标签。
+
+【输出格式】
+获取天气数据后，按以下格式输出报告：
+☁️ 【气象简报】
+🎯 【决策结论】
+💡 【出行贴士】
 """
 
-# ==========================================
-# 4. Agent 核心调度编排 (中枢神经)
-# ==========================================
+# 4. 核心调度逻辑
 def chat_with_agent(messages_history):
     dynamic_system_prompt = get_dynamic_system_prompt()
     
-    # 注入系统架构设定
     if not messages_history or messages_history[0].get("role") != "system":
         messages_history.insert(0, {"role": "system", "content": dynamic_system_prompt})
     else:
         messages_history[0]["content"] = dynamic_system_prompt
 
-    # 【第一次交互】：发送 Prompt 和 Tools，等待模型决策
     try:
         response = client.chat.completions.create(
             model="deepseek-chat",
             messages=messages_history,
-            tools=tools,         # <--- 明确向模型宣告 Function Calling 能力
-            tool_choice="auto"   # <--- 让模型自行决定是否调用工具
+            tools=tools,
+            tool_choice="auto"
         )
     except Exception as e:
-        return f"🚨 API 请求失败，请检查网络或 Key 余额。错误: {e}"
+        return f"🚨 API 请求失败: {e}"
     
     response_message = response.choices[0].message
     tool_calls = response_message.tool_calls
 
-    # 【处理 Function Calling 结果】
+    # 【拦截底层代码泄漏】如果大模型依然犯病输出 DSML，我们直接拦截并提醒
+    if response_message.content and "DSML" in response_message.content:
+        return "🧠 哎呀，我的大脑刚才处理这串复杂的日期时稍微短路了一下，能麻烦您换种说法再问一次吗？比如直接告诉我几月几号。"
+
+    # 正常的 Function Calling 处理流程
     if tool_calls:
-        # 1. 记录模型发出的“函数调用”请求
-        messages_history.append(response_message) 
+        messages_history.append(response_message)
         
-        # 2. 遍历执行每一个函数（本例中主要是 get_weather）
         for tool_call in tool_calls:
             if tool_call.function.name == "get_weather":
-                # 解析模型生成的 JSON 参数
                 function_args = json.loads(tool_call.function.arguments)
-                city = function_args.get("city")
-                # inferred_date 被大模型算出并传进来了，但查询天气其实只需要城市即可
+                city = function_args.get("city", "")
                 
-                # 3. 运行本地 Python 函数去向第三方拿数据
                 weather_result = fetch_weather_for_city(city)
                 
-                # 4. 将第三方拿到的真实天气数据，按 Function Calling 规范塞回给大模型
                 messages_history.append({
                     "tool_call_id": tool_call.id,
                     "role": "tool",
@@ -109,7 +94,6 @@ def chat_with_agent(messages_history):
                     "content": weather_result,
                 })
         
-        # 【第二次交互】：模型拿着最新的天气数据，进行最终推理并输出人类语言
         second_response = client.chat.completions.create(
             model="deepseek-chat",
             messages=messages_history,
@@ -117,6 +101,4 @@ def chat_with_agent(messages_history):
         return second_response.choices[0].message.content
         
     else:
-        # 未触发 Function Calling，通常是因为闲聊或信息极度不足
-
         return response_message.content
