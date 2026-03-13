@@ -30,15 +30,15 @@ if user_input := st.chat_input("输入您的出行计划..."):
     
     # 2. 调度 Agent 处理
     with st.chat_message("assistant"):
-        # 【修改点 1】：删除了 with st.spinner(...) 这一行
-        
-        # 获取后端传来的“文字流” (Generator)
-        response_stream = chat_with_agent(st.session_state.messages)
-        
-        # 【修改点 2】：使用 Streamlit 专用的 write_stream 渲染打字机效果
-        # 它会自动在屏幕上逐字打印，并在打印完成后返回完整的字符串
-        full_response = st.write_stream(response_stream)
+        # 恢复你喜欢的转圈圈提示语
+        with st.spinner("正在为您调取最新天气并定制出行方案..."):
             
-    # 【修改点 3】：将拼接好的完整回复追加到历史记录，保证多轮对话的记忆
-    st.session_state.messages.append({"role": "assistant", "content": full_response})
+            # 一次性拿到完整的回复字符串
+            response = chat_with_agent(st.session_state.messages)
+            
+            # 使用 markdown 瞬间将完整报告打印在屏幕上
+            st.markdown(response)
+            
+    # 将完整回复追加到历史记录
+    st.session_state.messages.append({"role": "assistant", "content": response})
 
