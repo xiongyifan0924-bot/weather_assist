@@ -90,7 +90,6 @@ def chat_with_agent(messages_history):
                 
                 # ... 前面解析 city 和调用 fetch_weather_for_city 的代码保持不变 ...
                 
-                # 把天气结果追加到历史记录中
                 messages_history.append({
                     "tool_call_id": tool_call.id,
                     "role": "tool",
@@ -98,31 +97,17 @@ def chat_with_agent(messages_history):
                     "content": weather_result,
                 })
         
-        # 【修改点 1】：第二次调用大模型生成最终建议时，开启 stream=True 参数
+        # 恢复成一次性生成并返回完整结果
         second_response = client.chat.completions.create(
             model="deepseek-chat",
             messages=messages_history,
-            temperature=0.1,  # 保持我们之前设置的低温度防幻觉
-            stream=True       # <--- 核心魔法：开启流式传输
+            temperature=0.1  # 依然保留低温度，防止发散和幻觉
         )
-        
-        # 【修改点 2】：用 yield 把大模型吐出来的文字碎片，源源不断地传给前端
-        for chunk in second_response:
-            if chunk.choices[0].delta.content:
-                yield chunk.choices[0].delta.content
+        return second_response.choices[0].message.content
         
     else:
-        # 【修改点 3】：如果没有触发天气工具（比如常规闲聊），也直接流式返回
-        # 注意这里也要在 create 里加 stream=True，或者保持接口一致直接 yield
-        response_stream = client.chat.completions.create(
-            model="deepseek-chat",
-            messages=messages_history,
-            temperature=0.1,
-            stream=True
-        )
-        for chunk in response_stream:
-            if chunk.choices[0].delta.content:
-                yield chunk.choices[0].delta.content
+        # 如果没有触发工具，也直接返回完整文本
+        return response_message.content
 
 
 
