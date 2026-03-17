@@ -11,7 +11,7 @@ if "messages" not in st.session_state:
     # 模拟良好的开场白体验
     st.session_state.messages.append({
         "role": "assistant", 
-        "content": "您好！我是您开发的 AI 出行决策助理。您可以问我类似**“这周末去广州看小蛮腰天气怎么样？”**的问题，我将为您调取气象基座数据并提供决策指引。"
+        "content": "您好！我是您开发的 AI 出行决策助理。您可以问我类似“这周末去广州看小蛮腰天气怎么样？”的问题，我将为您调取气象基座数据并提供决策指引。"
     })
 
 # 渲染历史气泡
