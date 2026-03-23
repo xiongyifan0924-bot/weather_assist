@@ -11,6 +11,7 @@ BASE_URL = "https://api.deepseek.com"
 client = OpenAI(api_key=API_KEY, base_url=BASE_URL)
 
 # 2. 极简版 Tools
+# 2. 极简版 Tools (加入强大的前置意图/景点转化逻辑)
 tools = [
     {
         "type": "function",
@@ -22,7 +23,8 @@ tools = [
                 "properties": {
                     "city": {
                         "type": "string",
-                        "description": "标准城市名，如'广州'、'宜春'"
+                        # 👇 就是这里！把大模型变成一个超级地理翻译官
+                        "description": "【极其重要】必须是标准的中国地级市行政区划名称！如果用户输入的是著名景点（如'泰山'、'迪士尼'）、简称（如'魔都'）或非标准名称，你必须先运用你的世界知识，将其转化为该景点所在的【标准地级市名称】（例如：输入'泰山'必须转化为'泰安'，输入'迪士尼'必须转化为'上海'），然后再输出本参数！"
                     }
                 },
                 "required": ["city"]
