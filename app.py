@@ -1,4 +1,5 @@
 import streamlit as st
+import re
 from llm_agent import chat_with_agent
 
 # 页面基础配置
@@ -16,10 +17,13 @@ if "messages" not in st.session_state:
 
 # 渲染历史气泡
 for msg in st.session_state.messages:
-    # 过滤掉底层系统 Prompt 和底层 Tool 返回的数据，保持 UI 纯净
-    if msg["role"] in ["user", "assistant"] and isinstance(msg["content"], str):
-        with st.chat_message(msg["role"]):
-            st.markdown(msg["content"])
+    # 【防御性编程核心】：增加 isinstance(msg, dict) 的判断！
+    # 哪怕历史缓存里混入了对象或纯字符串等脏数据，这一层装甲也能保证页面不崩溃
+    if isinstance(msg, dict) and msg.get("role") in ["user", "assistant"]:
+        content = msg.get("content", "")
+        if isinstance(content, str):
+            with st.chat_message(msg.get("role")):
+                st.markdown(content)
 
 # 接收用户指令并触发管线 (Pipeline)
 if user_input := st.chat_input("输入您的出行计划..."):
@@ -30,15 +34,24 @@ if user_input := st.chat_input("输入您的出行计划..."):
     
     # 2. 调度 Agent 处理
     with st.chat_message("assistant"):
-        # 恢复你喜欢的转圈圈提示语
         with st.spinner("正在为您调取最新天气并定制出行方案..."):
             
-            # 一次性拿到完整的回复字符串
+            # 获取 Agent 回复
             response = chat_with_agent(st.session_state.messages)
             
-            # 使用 markdown 瞬间将完整报告打印在屏幕上
-            st.markdown(response)
+            # 【强制类型转换】：防止底层 API 返回非字符串对象导致后续崩溃
+            response_text = str(response) if response is not None else "抱歉，系统暂时无法响应。"
             
-    # 将完整回复追加到历史记录
-    st.session_state.messages.append({"role": "assistant", "content": response})
-
+            # 【前端正则兜底拦截】：干掉大模型暴露的 < | DSML | xxx > 机器代码乱码
+            # 将所有带有 DSML 的尖括号标签替换为空字符串
+            clean_response = re.sub(r'<\s*\|\s*DSML\s*\|[^>]*>', '', response_text)
+            
+            # 打印经过清洗的干净回复
+            st.markdown(clean_response)
+            
+    # 3. 将完整且干净的回复追加到历史记录
+    st.session_state.messages.append({
+        "role": "assistant", 
+        # 注意：这里存入的是 clean_response，确保后续多轮对话喂给模型的上下文也是干净的
+        "content": clean_response 
+    })
