@@ -1,6 +1,7 @@
 from openai import OpenAI
 import json
 import datetime
+import re
 import streamlit as st
 from weather_api import fetch_weather_for_city
 
@@ -9,7 +10,7 @@ API_KEY = st.secrets["DEEPSEEK_API_KEY"]
 BASE_URL = "https://api.deepseek.com"
 client = OpenAI(api_key=API_KEY, base_url=BASE_URL)
 
-# 2. 极简版 Tools (去掉了干扰它的推算参数，回归最纯粹的城市查询)
+# 2. 极简版 Tools
 tools = [
     {
         "type": "function",
@@ -30,7 +31,7 @@ tools = [
     }
 ]
 
-# 3. 温和但坚定的系统提示词
+# 3. 温和但坚定（且极度严厉）的系统提示词
 def get_dynamic_system_prompt():
     now = datetime.datetime.now()
     date_str = now.strftime("%Y年%m月%d日，%A")
@@ -39,12 +40,13 @@ def get_dynamic_system_prompt():
 你是一个专业的出行天气决策助理。
 
 【核心工作流与铁律】
-1. 地点绝对忠实：当用户提供具体城市（如“宜春市”、“大理市”）时，你调用的 city 参数**必须完全忠实于该城市**！绝对、绝对禁止擅自将其替换为省会（如“南昌”、“昆明”）！
-2. 静默调用：遇到时间+地点，直接在后台通过 Function Calling 调用 `get_weather`，不需要输出任何思考过程。
-3. 对于“明天”、“周末”等相对时间，直接利用系统时间在心中推算，默认要素已齐，绝不要反问！
+1. 地点绝对忠实：当用户提供具体城市时，调用的 city 参数必须完全忠实于该城市！绝对禁止擅自替换为省会！
+2. 静默调用：遇到时间+地点，直接在后台通过 Function Calling 调用 `get_weather`。
+3. 相对时间推算：对于“明天”、“周末”等相对时间，直接利用系统时间推算，默认要素已齐，绝不要反问！
+4. 【极其重要】：当你需要调用天气工具时，绝对禁止在回复中输出任何 `<|DSML|>`、`<tool_call>` 等内部控制流标签！必须严格使用标准的 JSON 结构调用工具！
 
 【输出规范】
-获取到天气数据后，结合用户的活动（如：看油菜花需要晴朗无风），输出以下 Markdown 结构：
+获取到天气数据后，结合用户的活动，输出以下 Markdown 结构：
 ☁️ 【气象简报】
 🎯 【决策结论】
 💡 【出行贴士】
@@ -65,7 +67,7 @@ def chat_with_agent(messages_history):
             messages=messages_history,
             tools=tools,
             tool_choice="auto",
-            temperature=0.1  # <--- 【新增这一行！】极度降低温度，强制模型变成无情的机器，禁止它自作聪明
+            temperature=0.1
         )
     except Exception as e:
         return f"🚨 API 请求失败: {e}"
@@ -73,11 +75,39 @@ def chat_with_agent(messages_history):
     response_message = response.choices[0].message
     tool_calls = response_message.tool_calls
 
-    # 【拦截底层代码泄漏】如果大模型依然犯病输出 DSML，我们直接拦截并提醒
-    if response_message.content and "DSML" in response_message.content:
-        return "🧠 哎呀，我的大脑刚才处理这串复杂的日期时稍微短路了一下，能麻烦您换种说法再问一次吗？比如直接告诉我几月几号。"
+    # ==========================================
+    # 🛡️ Agent 自愈核心逻辑：处理 DeepSeek 的 DSML 泄漏
+    # ==========================================
+    if not tool_calls and response_message.content and "DSML" in response_message.content:
+        # 用正则从乱码中强行挖出城市名
+        match = re.search(r'name="city" string="true">(.*?)</', response_message.content)
+        if match:
+            city = match.group(1) # 拿到 "泰山"
+            weather_result = fetch_weather_for_city(city)
+            
+            # 强行组装上下文，假装大模型正常发起了提问，并强行把天气塞给它
+            messages_history.append({"role": "assistant", "content": f"（系统静默解析意图：查询{city}天气）"})
+            messages_history.append({
+                "role": "user", 
+                "content": f"【系统后门传入数据】：{city}的天气数据如下：{weather_result}。请立刻基于此数据，输出最终的出行决策简报！"
+            })
+            
+            # 发起二次调用（自愈循环）
+            try:
+                second_response = client.chat.completions.create(
+                    model="deepseek-chat",
+                    messages=messages_history,
+                    temperature=0.1
+                )
+                return second_response.choices[0].message.content
+            except Exception as e:
+                return "🚨 获取最终决策时发生网络波动，请重试。"
+        else:
+            return "🧠 抱歉，我查询天气时遇到了一点格式问题，能换个说法问我吗？"
 
-    # 正常的 Function Calling 处理流程
+    # ==========================================
+    # 正常、乖巧的 Function Calling 处理流程
+    # ==========================================
     if tool_calls:
         messages_history.append(response_message)
         
@@ -88,26 +118,21 @@ def chat_with_agent(messages_history):
                 
                 weather_result = fetch_weather_for_city(city)
                 
-                # ... 前面解析 city 和调用 fetch_weather_for_city 的代码保持不变 ...
-                
                 messages_history.append({
                     "tool_call_id": tool_call.id,
                     "role": "tool",
                     "name": "get_weather",
-                    "content": weather_result,
+                    "content": str(weather_result), # 确保传入的是字符串
                 })
         
-        # 恢复成一次性生成并返回完整结果
+        # 二次调用生成最终结果
         second_response = client.chat.completions.create(
             model="deepseek-chat",
             messages=messages_history,
-            temperature=0.1  # 依然保留低温度，防止发散和幻觉
+            temperature=0.1
         )
         return second_response.choices[0].message.content
         
     else:
-        # 如果没有触发工具，也直接返回完整文本
+        # 如果没有触发工具（比如纯聊天），直接返回文本
         return response_message.content
-
-
-
