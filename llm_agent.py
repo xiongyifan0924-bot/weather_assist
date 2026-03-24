@@ -57,80 +57,70 @@ def get_dynamic_system_prompt():
 def chat_with_agent(messages_history):
     dynamic_system_prompt = get_dynamic_system_prompt()
     
+    # 注入系统提示词
     if not messages_history or messages_history[0].get("role") != "system":
         messages_history.insert(0, {"role": "system", "content": dynamic_system_prompt})
     else:
         messages_history[0]["content"] = dynamic_system_prompt
 
-    try:
-        response = client.chat.completions.create(
-            model="deepseek-chat",
-            messages=messages_history,
-            tools=tools,
-            tool_choice="auto",
-            temperature=0.1
-        )
-    except Exception as e:
-        return f"🚨 API 请求失败: {e}"
+    # 🚀 核心大招：引入 ReAct 循环调度（最大允许它思考/调工具 3 次）
+    max_loops = 3
     
-    response_message = response.choices[0].message
-    tool_calls = response_message.tool_calls
-
-    # ==========================================
-    # 🛡️ Agent 自愈核心逻辑：处理 DeepSeek 的 DSML 泄漏
-    # ==========================================
-    if not tool_calls and response_message.content and "DSML" in response_message.content:
-        match = re.search(r'name="city" string="true">(.*?)</', response_message.content)
-        if match:
-            city = match.group(1) 
-            weather_result = fetch_weather_for_city(city)
-            
-            messages_history.append({"role": "assistant", "content": f"（系统静默解析意图：查询{city}天气）"})
-            messages_history.append({
-                "role": "user", 
-                "content": f"【系统后门传入数据】：{city}的天气数据如下：{weather_result}。请立刻基于此数据，输出最终的出行决策简报！"
-            })
-            
-            try:
-                second_response = client.chat.completions.create(
-                    model="deepseek-chat",
-                    messages=messages_history,
-                    temperature=0.1
-                )
-                return second_response.choices[0].message.content
-            except Exception as e:
-                return "🚨 获取最终决策时发生网络波动，请重试。"
-        else:
-            return "🧠 抱歉，我查询天气时遇到了一点格式问题，能换个说法问我吗？"
-
-    # ==========================================
-    # 正常 Function Calling 处理流程 (这里的 for 循环天然支持了刚才加入的多节点并发意图)
-    # ==========================================
-    if tool_calls:
-        messages_history.append(response_message)
+    for i in range(max_loops):
+        try:
+            response = client.chat.completions.create(
+                model="deepseek-chat",
+                messages=messages_history,
+                tools=tools,
+                tool_choice="auto",
+                temperature=0.1
+            )
+        except Exception as e:
+            return f"🚨 API 请求失败: {e}"
         
-        for tool_call in tool_calls:
-            if tool_call.function.name == "get_weather":
-                function_args = json.loads(tool_call.function.arguments)
-                city = function_args.get("city", "")
-                
-                # 系统会针对多城市，连续调用多次 API 
+        response_message = response.choices[0].message
+        
+        # 状况 A：大模型乖乖使用了标准 Function Calling
+        if response_message.tool_calls:
+            messages_history.append(response_message)
+            
+            for tool_call in response_message.tool_calls:
+                if tool_call.function.name == "get_weather":
+                    function_args = json.loads(tool_call.function.arguments)
+                    city = function_args.get("city", "")
+                    
+                    weather_result = fetch_weather_for_city(city)
+                    
+                    # 把查到的天气塞入记忆
+                    messages_history.append({
+                        "tool_call_id": tool_call.id,
+                        "role": "tool",
+                        "name": "get_weather",
+                        "content": str(weather_result),
+                    })
+            # 查完天气后，【不要 return】，使用 continue 进入下一轮循环！
+            # 让大模型自己判断是继续查下一个城市，还是输出最终答案。
+            continue
+            
+        # 状况 B：大模型没用标准工具，但发生了 DSML 乱码外溢（强行自愈）
+        content = response_message.content or ""
+        if "DSML" in content:
+            match = re.search(r'name="city" string="true">(.*?)</', content)
+            if match:
+                city = match.group(1)
                 weather_result = fetch_weather_for_city(city)
                 
-                # 并将所有结果依次 append 进上下文
-                messages_history.append({
-                    "tool_call_id": tool_call.id,
-                    "role": "tool",
-                    "name": "get_weather",
-                    "content": str(weather_result),
-                })
+                # 强行修复上下文
+                messages_history.append({"role": "assistant", "content": f"（系统静默拦截并解析意图：查询{city}天气）"})
+                messages_history.append({"role": "user", "content": f"【系统后门传入数据】：{city}的天气数据如下：{weather_result}。如果你还需要查其他城市，请继续；如果查完了，请输出最终决策。"})
+                # 继续进入下一轮循环
+                continue
+            else:
+                # 乱码里没提取出城市名，用正则暴力抹除乱码后返回
+                return re.sub(r'<\s*\|\s*DSML\s*\|[^>]*>', '', content)
+                
+        # 状况 C：既没有工具调用，也没有乱码。说明大模型认为资料收集完毕，给出了最终的人类语言！
+        return content
         
-        second_response = client.chat.completions.create(
-            model="deepseek-chat",
-            messages=messages_history,
-            temperature=0.1
-        )
-        return second_response.choices[0].message.content
-        
-    else:
-        return response_message.content
+    # 如果循环了 3 次还没结束，强制掐断，防止大模型死循环烧钱
+    return "🧠 抱歉，查询该行程涉及的数据过于复杂，我的处理时间超时了，请尝试拆分您的问题。"
