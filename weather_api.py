@@ -17,23 +17,35 @@ def _extract(result):
             result.get("country", ""), result.get("admin1", ""))
 
 
-def _query_geocoding(name, prefer_cn=False):
-    """单次地理编码查询。prefer_cn 用于拼音兜底：拼音是猜出来的，
-    强制优先取中国境内匹配，避免 'luan' 命中罗安达这类跨国错配。"""
-    params = {"name": name, "count": 5 if prefer_cn else 1, "language": "zh", "format": "json"}
+# 行政区级别：省级中心 > 地级市 > 区县 > 普通村镇
+_ADMIN_LEVEL = {"PPLC": 5, "PPLA": 4, "PPLA2": 3, "PPLA3": 2, "PPLA4": 1}
+
+
+def _candidates(name):
+    """单次地理编码查询的全部候选，只保留中国境内"""
+    params = {"name": name, "count": 8, "language": "zh", "format": "json"}
     try:
         response = requests.get(GEOCODING_URL, params=params, timeout=TIMEOUT)
         response.raise_for_status()
-        results = response.json().get("results") or []
+        return [r for r in (response.json().get("results") or [])
+                if r.get("country_code") == "CN"]
     except Exception as e:
         print(f"Geocoding API Error: {e}")
-        return None
+        return []
 
-    if prefer_cn:
-        for r in results:
-            if r.get("country_code") == "CN":
-                return _extract(r)
-    return _extract(results[0]) if results else None
+
+def _rank(result, names):
+    """排序依据：名字是否对得上 > 人口 > 行政区级别。
+
+    气象库不按重要性排序——「长沙」的第一条是重庆的同名村（人口 4.7 万），
+    真正的湖南省会（人口 309 万）排在后面。而只看名字又会踩另一个坑：
+    「大同」会选中黑龙江的同名镇（行政区级别更高但人口远小于山西大同市）。
+    两个信号一起用才稳。
+    """
+    nm = (result.get("name") or "").lower()
+    name_ok = 2 if nm in names else 0
+    return (name_ok, result.get("population") or 0,
+            _ADMIN_LEVEL.get(result.get("feature_code") or "", 0))
 
 
 def _to_pinyin(city):
@@ -49,22 +61,36 @@ def _to_pinyin(city):
 def get_coordinates(city, city_en=None):
     """获取城市的经纬度信息。
 
-    Open-Meteo 的中文条目覆盖不全（连云港、厦门、温州等查不到），
-    因此中文查不到时降级到拼音查询。不做前缀截断：截断可能命中同名
-    小镇（如"连云港连岛"截成"连云"会返回福建的地点）并静默给出错误
-    地区的数据，宁可报错让模型换标准地名重试。
+    依次用「中文市名 / 中文名 / 拼音市名 / 拼音名」查询并合并候选，选最优。
+    中文地名库覆盖不全（「连云港」中文查不到，必须用拼音）且同名异地极多，
+    所以既要多形式查询，也要按名字+人口+级别综合排序。
+
+    名字完全对不上时返回失败——实测「稻城」在库里只有谐音「道成」（江苏），
+    「香格里拉」的中文名只匹配到河北的社区。这类情况宁可让上层报错，
+    也不能拿错误地区的天气当目的地数据用。
     """
-    result = _query_geocoding(city)
-    if result:
-        return result
+    py = _to_pinyin(city) or ""
+    names = {city.lower(), city.lower() + "市"}
+    if py:
+        names |= {py, py + "shi"}
+    if city_en:
+        names.add(city_en.lower())
 
-    for fallback in (city_en, _to_pinyin(city)):
-        if fallback and fallback != city:
-            result = _query_geocoding(fallback, prefer_cn=True)
-            if result:
-                return result
+    forms = [city + "市", city]
+    if py:
+        forms += [py + "shi", py]
+    if city_en:
+        forms.append(city_en)
 
-    return None, None, None, None, None
+    best = None
+    for form in dict.fromkeys(forms):
+        for r in _candidates(form):
+            if best is None or _rank(r, names) > _rank(best, names):
+                best = r
+
+    if best is None or _rank(best, names)[0] == 0:
+        return None, None, None, None, None
+    return _extract(best)
 
 
 def get_weather_data(lat, lon):
